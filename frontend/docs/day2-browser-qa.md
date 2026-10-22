@@ -9,6 +9,8 @@ Status: **open**. The local sandbox rejected launching Chrome (`sandbox_approval
 - Fetching alert detail, resolving it, and querying Active and Resolved succeeded. Active contained zero alerts after resolution; Resolved contained one.
 - Stopping that backend produced an empty HTTP 502 from Vite. The API client now reports “Backend unavailable. Check that the server is running and try Refresh.”
 - Frontend tests cover dialog focus containment, Escape and focus return, filters, submission, resolution, and the visible backend failure state. Tests run in jsdom and cannot establish visual layout or actual browser interaction.
+- The integrated `npm run test:e2e` test mounts the real React dashboard against a real Express server and temporary SQLite database. It covers submit, pending-to-generated explanation, detail evidence, resolution, healthy and mixed-validity batches, and provider-failure fallback with a stub. It still does not establish visual layout or actual browser interaction.
+- A browser report exposed `Origin is not allowed` when Vite forwarded `http://127.0.0.1:5173` to a backend configured only for `localhost:5173`. Both exact local origins are now in the backend `.env.example` and local `.env`. The reported mixed-validity batch then passed through the Vite proxy: two accepted, two rejected, one healthy, and one alert. This confirms the CORS and validation path, not the browser visuals.
 
 ## Browser checks to finish
 

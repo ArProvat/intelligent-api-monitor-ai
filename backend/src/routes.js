@@ -1,9 +1,9 @@
 import { createMonitorController } from './controllers/monitorController.js';
 import { createAlertController } from './controllers/alertController.js';
 
-export function registerRoutes(app, { db, policies, explain }) {
+export function registerRoutes(app, { db, policies, mode, wakeWorker }) {
   const alerts = createAlertController(db);
-  app.post('/monitor', createMonitorController({ db, policies, explain }));
+  app.post('/monitor', createMonitorController({ db, policies, mode, wakeWorker }));
   app.get('/alerts', alerts.list);
   app.get('/alerts/:id', alerts.get);
   app.patch('/alerts/:id/resolve', alerts.resolve);

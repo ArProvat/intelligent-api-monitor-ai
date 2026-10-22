@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import OpenAI from 'openai';
 import { detect } from '../src/services/detection.js';
 import { loadConfig } from '../src/config.js';
-import { openDatabase, saveBatch, getAlert } from '../src/models/monitorModel.js';
+import { openDatabase, saveBatch, getAlert, claimPendingExplanation, recoverPendingExplanations } from '../src/models/monitorModel.js';
 import { prepareObservations } from '../src/services/monitorService.js';
 import { createApp } from '../src/app.js';
 import { createExplainer, createOpenRouterProvider } from '../src/services/explanation.js';
@@ -20,7 +20,8 @@ async function fixture(overrides = {}, provider = null) {
   const path = join(dir, 'monitor.db');
   let db = openDatabase(path);
   const config = { ...loadConfig({}), ...overrides };
-  const server = createApp({ db, config, provider, logger }).listen(0, '127.0.0.1');
+  const app = createApp({ db, config, provider, logger });
+  const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   return {
@@ -31,8 +32,18 @@ async function fixture(overrides = {}, provider = null) {
     },
     closeDb: () => db.close(),
     reopenDb: () => { db = openDatabase(path); return db; },
-    cleanup: async () => { await new Promise(resolve => server.close(resolve)); if (db.open) db.close(); rmSync(dir, { recursive: true, force: true }); }
+    cleanup: async () => { await new Promise(resolve => server.close(resolve)); await app.locals.explanationWorker?.stop(); if (db.open) db.close(); rmSync(dir, { recursive: true, force: true }); }
   };
+}
+
+async function waitForAlert(f, id, status) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const alert = await f.request(`/alerts/${id}`);
+    if (alert.body.explanation_status === status) return alert.body;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(`Alert ${id} did not reach ${status}`);
 }
 
 test('pure detection obeys thresholds, classifications and record policy', () => {
@@ -66,7 +77,7 @@ test('batch validation, alerts, filtering, resolution and persistence', async ()
       { ...base, patient_payload: { secret: 'x' } }
     ]);
     assert.equal(mixed.status, 200);
-    assert.deepEqual(mixed.body.counts, { received: 5, accepted: 1, rejected: 4, healthy: 0, alerts: 1, explanations: { generated: 0, fallback: 0, mock: 1 } });
+    assert.deepEqual(mixed.body.counts, { received: 5, accepted: 1, rejected: 4, healthy: 0, alerts: 1, explanations: { pending: 0, generated: 0, fallback: 0, mock: 1 } });
     assert.deepEqual(mixed.body.results.map(x => x.index), [0, 1, 2, 3, 4]);
     const id = mixed.body.results[0].alert_id;
     const alert = await f.request(`/alerts/${id}`);
@@ -109,21 +120,55 @@ test('all invalid and structural errors have indexed or clear errors', async () 
   } finally { await f.cleanup(); }
 });
 
+test('local frontend origin is allowed and other origins are rejected', async () => {
+  const f = await fixture({ corsOrigins: ['http://127.0.0.1:5173', 'http://localhost:5173'] });
+  try {
+    for (const origin of ['http://127.0.0.1:5173', 'http://localhost:5173']) {
+      const response = await fetch(f.url + '/health', { headers: { Origin: origin } });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    }
+    const rejected = await fetch(f.url + '/monitor', {
+      method: 'POST',
+      headers: { Origin: 'http://example.test', 'Content-Type': 'application/json' },
+      body: JSON.stringify([base])
+    });
+    assert.equal(rejected.status, 403);
+    assert.equal((await rejected.json()).error.code, 'ORIGIN_NOT_ALLOWED');
+  } finally { await f.cleanup(); }
+});
+
 test('provider failure and missing credentials preserve factual fallback', async () => {
   for (const provider of [async () => { throw new Error('rate limit'); }, async () => ({ summary: '', suggested_checks: [] }), async (_, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))))]) {
     const f = await fixture({ llmMode: 'openrouter', openrouterKey: 'test-key', llmTimeoutMs: 100 }, provider);
     try {
       const sent = await f.request('/monitor', 'POST', [{ ...base, status_code: 500 }]);
-      const alert = await f.request(`/alerts/${sent.body.results[0].alert_id}`);
-      assert.equal(alert.body.explanation_status, 'fallback');
-      assert.equal(alert.body.ai_summary, null);
-      assert.match(alert.body.fallback_message, /server failure/);
+      assert.equal(sent.body.results[0].explanation_status, 'pending');
+      const alert = await waitForAlert(f, sent.body.results[0].alert_id, 'fallback');
+      assert.equal(alert.ai_summary, null);
+      assert.match(alert.fallback_message, /server failure/);
     } finally { await f.cleanup(); }
   }
   const f = await fixture({ llmMode: 'openrouter', openrouterKey: '' });
   try {
     const sent = await f.request('/monitor', 'POST', [{ ...base, status_code: 500 }]);
     assert.equal(sent.body.results[0].explanation_status, 'fallback');
+  } finally { await f.cleanup(); }
+});
+
+test('rule-based fallback never calls an LLM provider', async () => {
+  let calls = 0;
+  const provider = async () => { calls++; throw new Error('Provider should not be called'); };
+  const f = await fixture({ llmMode: 'fallback', openrouterKey: 'unused-test-key' }, provider);
+  try {
+    const sent = await f.request('/monitor', 'POST', [{ ...base, status_code: 500 }]);
+    const alert = await f.request(`/alerts/${sent.body.results[0].alert_id}`);
+    assert.equal(calls, 0);
+    assert.equal(alert.body.explanation_status, 'fallback');
+    assert.equal(alert.body.ai_summary, null);
+    assert.equal(alert.body.provider, null);
+    assert.equal(alert.body.model, null);
+    assert.match(alert.body.fallback_message, /HTTP 500 is a server failure/);
   } finally { await f.cleanup(); }
 });
 
@@ -197,33 +242,101 @@ test('a valid provider response is stored as generated with provider metadata', 
   const f = await fixture({ llmMode: 'openrouter', openrouterKey: 'test-key' }, provider);
   try {
     const sent = await f.request('/monitor', 'POST', [{ ...base, status_code: 500 }]);
-    const alert = await f.request(`/alerts/${sent.body.results[0].alert_id}`);
-    assert.equal(sent.body.results[0].explanation_status, 'generated');
-    assert.equal(alert.body.explanation_status, 'generated');
-    assert.equal(alert.body.ai_summary, 'HTTP 500 was observed.');
-    assert.deepEqual(alert.body.suggested_checks, ['Inspect API logs.']);
-    assert.equal(alert.body.provider, 'openrouter');
-    assert.equal(alert.body.model, 'openai/gpt-4o-mini');
-    assert.deepEqual(alert.body.findings.map(finding => finding.code), ['SERVER_FAILURE']);
+    assert.equal(sent.body.results[0].explanation_status, 'pending');
+    const alert = await waitForAlert(f, sent.body.results[0].alert_id, 'generated');
+    assert.equal(alert.ai_summary, 'HTTP 500 was observed.');
+    assert.deepEqual(alert.suggested_checks, ['Inspect API logs.']);
+    assert.equal(alert.provider, 'openrouter');
+    assert.equal(alert.model, 'openai/gpt-4o-mini');
+    assert.deepEqual(alert.findings.map(finding => finding.code), ['SERVER_FAILURE']);
   } finally { await f.cleanup(); }
 });
 
-test('startup changes unfinished pending explanation to factual fallback', () => {
+test('POST returns pending before provider completes; resolution survives explanation update', async () => {
+  const releases = [];
+  let providerCalls = 0;
+  const provider = async () => {
+    providerCalls++;
+    return new Promise(resolve => { releases.push(() => resolve({
+      summary: 'HTTP 500 was observed.', suggested_checks: ['Inspect API logs.']
+    })); });
+  };
+  const f = await fixture({ llmMode: 'openrouter', openrouterKey: 'test-key' }, provider);
+  try {
+    const sent = await f.request('/monitor', 'POST', [base, { ...base, api_name: 'WarningAPI', response_time_ms: 3500 }, { ...base, status_code: 500 }]);
+    assert.equal(sent.status, 200);
+    assert.deepEqual(sent.body.counts.explanations, { pending: 2, generated: 0, fallback: 0, mock: 0 });
+    assert.equal(sent.body.counts.healthy, 1);
+    const warningId = sent.body.results[1].alert_id;
+    const criticalId = sent.body.results[2].alert_id;
+    assert.equal((await f.request(`/alerts/${warningId}`)).body.severity, 'warning');
+    assert.equal((await f.request(`/alerts/${criticalId}`)).body.explanation_status, 'pending');
+    assert.equal((await f.request(`/alerts?status=all&batch_id=${sent.body.batch_id}`)).body.total, 2);
+    assert.equal((await f.request(`/alerts?status=all&batch_id=00000000-0000-4000-8000-000000000000`)).body.total, 0);
+    assert.equal((await f.request('/alerts?batch_id=invalid')).status, 400);
+    const resolved = await f.request(`/alerts/${criticalId}/resolve`, 'PATCH');
+    assert.equal(resolved.body.status, 'resolved');
+    const deadline = Date.now() + 1000;
+    while (providerCalls < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(providerCalls, 2);
+    releases.forEach(release => release());
+    const warning = await waitForAlert(f, warningId, 'generated');
+    assert.equal(warning.severity, 'warning');
+    const critical = await waitForAlert(f, criticalId, 'generated');
+    assert.equal(critical.status, 'resolved');
+    assert.equal(critical.resolved_at, resolved.body.resolved_at);
+    assert.equal(providerCalls, 2);
+  } finally { releases.forEach(release => release()); await f.cleanup(); }
+});
+
+test('worker bounds provider calls across concurrent batches', async () => {
+  let active = 0, peak = 0, calls = 0;
+  const provider = async () => {
+    calls++;
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    active--;
+    return { summary: 'An anomaly was observed.', suggested_checks: ['Check API logs.'] };
+  };
+  const f = await fixture({ llmMode: 'openrouter', openrouterKey: 'test-key', llmConcurrency: 2 }, provider);
+  try {
+    const requests = Array.from({ length: 3 }, (_, batch) => {
+      const items = Array.from({ length: 3 }, (_, item) => ({
+        ...base, api_name: `API-${batch}-${item}`, status_code: 500
+      }));
+      return f.request('/monitor', 'POST', items);
+    });
+    const batches = await Promise.all(requests);
+    assert.ok(batches.every(batch => batch.status === 200 && batch.body.counts.explanations.pending === 3));
+    await Promise.all(batches.flatMap(batch => batch.body.results.map(item => waitForAlert(f, item.alert_id, 'generated'))));
+    assert.equal(calls, 9);
+    assert.equal(peak, 2);
+  } finally { await f.cleanup(); }
+});
+
+test('startup retries one interrupted explanation, then uses factual fallback', () => {
   const dir = mkdtempSync(join(tmpdir(), 'monitor-pending-'));
   const path = join(dir, 'pending.db');
+  let db;
   try {
-    let db = openDatabase(path);
+    db = openDatabase(path);
     const prepared = prepareObservations([{ index: 0, observation: { ...base, status_code: 500 } }], {});
     const saved = saveBatch(db, prepared, 1);
     const id = saved.alerts[0].id;
     assert.equal(getAlert(db, id).explanation_status, 'pending');
     assert.match(getAlert(db, id).fallback_message, /server failure/);
+    assert.equal(claimPendingExplanation(db).id, id);
     db.close();
     db = openDatabase(path);
+    recoverPendingExplanations(db, true);
+    assert.equal(getAlert(db, id).explanation_status, 'pending');
+    assert.equal(claimPendingExplanation(db).id, id);
+    db.close();
+    db = openDatabase(path);
+    recoverPendingExplanations(db, true);
     assert.equal(getAlert(db, id).explanation_status, 'fallback');
     assert.equal(getAlert(db, id).ai_summary, null);
-    db.close();
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { if (db?.open) db.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('LLM concurrency stays bounded across requests', async () => {

@@ -128,9 +128,46 @@ test('mixed-validity feedback shows accepted items, original indexes, and valida
   expect(screen.getByText(/Item 3: rejected/)).toBeInTheDocument();
   expect(screen.getByText(/Item 4: rejected/)).toBeInTheDocument();
   expect(screen.getByText(/Original index 3/)).toBeInTheDocument();
+  expect(screen.getByText('Explanation: Rule-based explanation')).toBeInTheDocument();
   expect(within(screen.getByRole('region', { name: 'Batch result' })).getByText('patient_payload')).toBeInTheDocument();
   expect(api.monitor).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ response_time_ms: '3500' })]));
 });
+
+test('pending batch feedback updates when the saved explanation finishes', async () => {
+  const alert = makeAlert();
+  api.monitor.mockResolvedValue({
+    batch_id: 'batch-1', counts: { received: 1, accepted: 1, rejected: 0, healthy: 0, alerts: 1,
+      explanations: { pending: 1, generated: 0, fallback: 0, mock: 0 } },
+    results: [{ index: 0, status: 'alert', alert_id: alert.id, explanation_status: 'pending', findings: alert.findings }]
+  });
+  api.alerts.mockImplementation(({ batchId }) => Promise.resolve(batchId
+    ? { total: 1, limit: 100, offset: 0, items: [alert] }
+    : { total: 0, limit: 20, offset: 0, items: [] }));
+  render(<App />);
+  await userEvent.click(screen.getByRole('button', { name: 'Submit observations' }));
+  await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Submit observations' }));
+  expect(await screen.findByText('Explanation: Explanation pending')).toBeInTheDocument();
+  expect(await screen.findByText('Explanation: AI-generated explanation', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(api.alerts).toHaveBeenCalledWith(expect.objectContaining({ batchId: 'batch-1', status: 'all' }), expect.anything());
+}, 7000);
+
+test('failed explanation status check keeps pending feedback and offers a retry', async () => {
+  api.monitor.mockResolvedValue({
+    batch_id: 'batch-2', counts: { received: 1, accepted: 1, rejected: 0, healthy: 0, alerts: 1,
+      explanations: { pending: 1, generated: 0, fallback: 0, mock: 0 } },
+    results: [{ index: 0, status: 'alert', alert_id: 'alert-2', explanation_status: 'pending' }]
+  });
+  api.alerts.mockImplementation(({ batchId }) => batchId
+    ? Promise.reject(new ApiError('Could not reach the backend.'))
+    : Promise.resolve({ total: 0, limit: 20, offset: 0, items: [] }));
+  render(<App />);
+  await userEvent.click(screen.getByRole('button', { name: 'Submit observations' }));
+  await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Submit observations' }));
+  expect(await screen.findByText('Explanation: Explanation pending')).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'Check explanation status again' }, { timeout: 5000 })).toBeInTheDocument();
+  expect(screen.getByText('Could not reach the backend.')).toBeInTheDocument();
+  expect(screen.getByText('Explanation: Explanation pending')).toBeInTheDocument();
+}, 7000);
 
 test('fully invalid HTTP 422 still displays indexed batch feedback', async () => {
   api.monitor.mockRejectedValue(new ApiError('Invalid items', { status: 422, data: {

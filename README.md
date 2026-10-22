@@ -23,7 +23,9 @@ npm run dev
 
 Open `http://127.0.0.1:5173`. The backend listens at `http://127.0.0.1:3000` by default. The Vite server proxies `/monitor`, `/alerts`, and `/health` to the backend. To use another backend port, set `PORT` before starting the backend and `DEV_BACKEND_URL` before starting Vite, for example `http://127.0.0.1:31417`.
 
-The demo workflow: submit the assessment sample, inspect the AppointmentAPI alert, resolve it, switch to Resolved, then submit the healthy and mixed-validity samples. Loading a sample only fills the editor. Use fallback mode for routine UI checks; it never calls OpenRouter.
+The backend `.env.example` allows both `http://127.0.0.1:5173` and `http://localhost:5173`. Keep the exact URL used in your browser in `CORS_ORIGINS`; the Vite proxy forwards its `Origin` header. Restart the backend after changing `.env`.
+
+The demo workflow: submit the assessment sample, inspect the AppointmentAPI alert, resolve it, switch to Resolved, then submit the healthy and mixed-validity samples. Loading a sample only fills the editor. Use fallback mode for routine UI checks; it never calls OpenRouter. With `LLM_MODE=openrouter` and a server-side key, POST returns after saving alerts; the dashboard shows factual fallback text while it checks pending explanations.
 
 ## Checks and builds
 
