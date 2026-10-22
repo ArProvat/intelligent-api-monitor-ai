@@ -1,6 +1,5 @@
 const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const listTimeoutMs = 15000;
-const positive = (value, fallback) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
 
 export class ApiError extends Error {
   constructor(message, { status = 0, requestId = null, data = null, uncertain = false } = {}) {
@@ -42,17 +41,18 @@ async function request(path, { method = 'GET', body, signal, timeoutMs = listTim
 
 export const api = {
   health: options => request('/health', options),
-  alerts: ({ status, severity, apiName, limit, offset }, options) => {
+  alerts: ({ status = 'active', severity = '', apiName = '', batchId = '', limit = 20, offset = 0 }, options) => {
     const query = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
     if (severity) query.set('severity', severity);
     if (apiName.trim()) query.set('api_name', apiName.trim());
+    if (batchId) query.set('batch_id', batchId);
     return request(`/alerts?${query}`, options);
   },
   alert: (id, options) => request(`/alerts/${encodeURIComponent(id)}`, options),
   resolve: id => request(`/alerts/${encodeURIComponent(id)}/resolve`, { method: 'PATCH' }),
   monitor: (items, options) => request('/monitor', {
     method: 'POST', body: items, uncertainOnFailure: true,
-    timeoutMs: Math.max(60000, Math.ceil(items.length / positive(import.meta.env.VITE_EXPECTED_LLM_CONCURRENCY, 3)) * positive(import.meta.env.VITE_EXPECTED_LLM_TIMEOUT_MS, 60000) + 30000),
+    timeoutMs: 30000,
     ...options
   })
 };

@@ -53,7 +53,18 @@ export default function DashboardPage() {
       .then(data => { if (!controller.signal.aborted && version === detailVersion.current) setDetail({ data, loading: false, error: null }); })
       .catch(error => { if (!controller.signal.aborted && version === detailVersion.current) setDetail(previous => ({ ...previous, loading: false, error })); });
     return () => controller.abort();
-  }, [selectedId]);
+  }, [selectedId, refresh]);
+
+  const pendingVisible = listing.data?.items.some(alert => alert.explanation_status === 'pending')
+    || (selectedId && detail.data?.id === selectedId && detail.data.explanation_status === 'pending');
+  useEffect(() => {
+    if (!pendingVisible || listing.loading || listing.refreshing || listing.error ||
+      (selectedId && (detail.loading || detail.error))) return;
+    const timer = setTimeout(() => { if (!document.hidden) setRefresh(value => value + 1); }, 3000);
+    const onVisible = () => { if (!document.hidden) setRefresh(value => value + 1); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [pendingVisible, listing.loading, listing.refreshing, listing.error, selectedId, detail.loading, detail.error, refresh]);
 
   function changeFilter(field, value) {
     setPage(0);
