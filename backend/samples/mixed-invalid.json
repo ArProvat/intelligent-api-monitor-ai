@@ -1,0 +1,6 @@
+[
+  { "api_name": "HealthyAPI", "response_time_ms": 120, "status_code": 200, "records_returned": 5 },
+  { "api_name": "SlowAPI", "response_time_ms": 3500, "status_code": 200, "records_returned": 2 },
+  { "api_name": "BadAPI", "response_time_ms": "3500", "status_code": 200, "records_returned": 2 },
+  { "api_name": "PatientDataAPI", "response_time_ms": 90, "status_code": 200, "patient_payload": { "name": "must be rejected" } }
+]
