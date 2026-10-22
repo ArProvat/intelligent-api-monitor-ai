@@ -1,8 +1,8 @@
 import { observationSchema, itemErrors } from '../validation.js';
 import { processBatch } from '../services/monitorService.js';
 
-export function createMonitorController({ db, policies, explain }) {
-  return async function postMonitor(req, res) {
+export function createMonitorController({ db, policies, mode, wakeWorker }) {
+  return function postMonitor(req, res) {
     const observations = req.body;
     if (!Array.isArray(observations) || observations.length === 0 || observations.length > 100) {
       return res.status(422).json({
@@ -25,19 +25,15 @@ export function createMonitorController({ db, policies, explain }) {
       }
     });
 
-    const batch = await processBatch(db, accepted, observations.length, policies, explain);
-    const explanationByAlert = new Map(batch.explanations.map(({ id, status }) => [id, status]));
-    const results = batch.results.map(result => {
-      if (!result.alert_id) return result;
-      return { ...result, explanation_status: explanationByAlert.get(result.alert_id) };
-    });
+    const batch = processBatch(db, accepted, observations.length, policies, mode);
+    const results = [...batch.results];
     results.push(...rejected);
     results.sort((a, b) => a.index - b.index);
 
-    const explanationCounts = { generated: 0, fallback: 0, mock: 0 };
-    for (const { status } of batch.explanations) explanationCounts[status]++;
+    const explanationCounts = { pending: 0, generated: 0, fallback: 0, mock: 0 };
+    for (const { status } of batch.alerts) explanationCounts[status]++;
 
-    return res.status(accepted.length ? 200 : 422).json({
+    const response = res.status(accepted.length ? 200 : 422).json({
       batch_id: batch.batchId,
       counts: {
         received: observations.length,
@@ -49,5 +45,7 @@ export function createMonitorController({ db, policies, explain }) {
       },
       results
     });
+    if (explanationCounts.pending) wakeWorker();
+    return response;
   };
 }

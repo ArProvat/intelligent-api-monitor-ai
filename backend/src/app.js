@@ -1,12 +1,20 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import pino from 'pino';
-import { createExplainer } from './services/explanation.js';
+import { createExplainer, explanationMode } from './services/explanation.js';
+import { createExplanationWorker } from './services/explanationWorker.js';
+import { recoverPendingExplanations } from './models/monitorModel.js';
 import { registerRoutes } from './routes.js';
 
 export function createApp({ db, config, provider = null, logger = pino({ level: 'info' }) }) {
   const app = express();
-  const explain = createExplainer(config, provider, logger);
+  const mode = explanationMode(config);
+  recoverPendingExplanations(db, mode === 'openrouter');
+  const worker = mode === 'openrouter'
+    ? createExplanationWorker({ db, explain: createExplainer(config, provider, logger),
+      concurrency: config.llmConcurrency, logger }) : null;
+  app.locals.explanationWorker = worker;
+  worker?.wake();
   app.disable('x-powered-by');
 
   app.use((req, res, next) => {
@@ -43,7 +51,7 @@ export function createApp({ db, config, provider = null, logger = pino({ level: 
   });
 
   app.use(express.json({ limit: '64kb', strict: true }));
-  registerRoutes(app, { db, policies: config.policies, explain });
+  registerRoutes(app, { db, policies: config.policies, mode, wakeWorker: () => worker?.wake() });
 
   app.use((req, res) => res.status(404).json({
     error: { code: 'NOT_FOUND', message: 'Route not found', request_id: req.id }
