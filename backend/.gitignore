@@ -1,0 +1,9 @@
+node_modules/
+.npm-cache/
+dist/
+data/
+.env
+*.db
+*.db-shm
+*.db-wal
+auto_commit.ps1
