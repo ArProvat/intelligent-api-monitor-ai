@@ -99,20 +99,30 @@ export function createLimiter(max) {
   };
 }
 
+export function explanationMode(config) {
+  return config.llmMode === 'openrouter' && !config.openrouterKey ? 'fallback' : config.llmMode;
+}
+
+export function immediateExplanation(mode, observation, findings) {
+  if (mode === 'fallback') return { status: 'fallback' };
+  if (mode === 'mock') return {
+    status: 'mock', provider: 'mock', model: 'deterministic',
+    summary: `MOCK EXPLANATION: ${findings.map(f => f.code).join(', ')} for ${observation.api_name}.`,
+    suggestedChecks: ['Review the recorded metrics and API policy.']
+  };
+  return null;
+}
+
 export function createExplainer(config, provider = null, logger = null) {
-  const mode = config.llmMode === 'openrouter' && !config.openrouterKey ? 'fallback' : config.llmMode;
+  const mode = explanationMode(config);
   const call = provider ?? (mode === 'openrouter'
     ? createOpenRouterProvider({ key: config.openrouterKey, model: config.openrouterModel })
     : null);
   const limit = createLimiter(config.llmConcurrency);
 
   return async ({ observation, policy, findings }) => {
-    if (mode === 'fallback') return { status: 'fallback' };
-    if (mode === 'mock') return {
-      status: 'mock', provider: 'mock', model: 'deterministic',
-      summary: `MOCK EXPLANATION: ${findings.map(f => f.code).join(', ')} for ${observation.api_name}.`,
-      suggestedChecks: ['Review the recorded metrics and API policy.']
-    };
+    const immediate = immediateExplanation(mode, observation, findings);
+    if (immediate) return immediate;
     try {
       const input = {
         api_name: observation.api_name,

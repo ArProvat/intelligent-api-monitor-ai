@@ -13,8 +13,6 @@ export function openDatabase(path) {
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
   migrate(db);
-  db.prepare(`UPDATE alerts SET explanation_status = 'fallback', updated_at = ?
-              WHERE explanation_status = 'pending'`).run(new Date().toISOString());
   return db;
 }
 
@@ -42,15 +40,16 @@ export function saveBatch(db, items, receivedCount) {
      records_returned, response_time_threshold_ms, expect_records, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insertAlert = db.prepare(`INSERT INTO alerts
-    (id, observation_id, findings_json, severity, fallback_message, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    (id, observation_id, findings_json, severity, fallback_message, ai_summary,
+     suggested_checks_json, explanation_status, provider, model, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   return db.transaction(() => {
     insertBatch.run(batchId, now, receivedCount, items.length, receivedCount - items.length);
     const results = [];
     const alerts = [];
 
-    for (const { index, observation, policy, detection, fallback } of items) {
+    for (const { index, observation, policy, detection, fallback, initialExplanation } of items) {
       const observationId = randomUUID();
       insertObservation.run(
         observationId, batchId, index, observation.api_name,
@@ -62,12 +61,16 @@ export function saveBatch(db, items, receivedCount) {
         const alertId = randomUUID();
         insertAlert.run(
           alertId, observationId, JSON.stringify(detection.findings),
-          detection.severity, fallback, now, now
+          detection.severity, fallback, initialExplanation?.summary ?? null,
+          initialExplanation?.suggestedChecks ? JSON.stringify(initialExplanation.suggestedChecks) : null,
+          initialExplanation?.status ?? 'pending', initialExplanation?.provider ?? null,
+          initialExplanation?.model ?? null, now, now
         );
-        alerts.push({ id: alertId, observation, policy, findings: detection.findings });
+        alerts.push({ id: alertId, status: initialExplanation?.status ?? 'pending' });
         results.push({
           index, observation_id: observationId, alert_id: alertId,
-          status: 'alert', severity: detection.severity, findings: detection.findings
+          status: 'alert', severity: detection.severity, findings: detection.findings,
+          explanation_status: initialExplanation?.status ?? 'pending'
         });
       } else {
         results.push({ index, observation_id: observationId, status: 'healthy' });
@@ -125,6 +128,7 @@ export function listAlerts(db, filters) {
   if (filters.status !== 'all') { where.push('a.status = ?'); params.push(filters.status); }
   if (filters.api_name) { where.push('o.api_name = ?'); params.push(filters.api_name); }
   if (filters.severity) { where.push('a.severity = ?'); params.push(filters.severity); }
+  if (filters.batch_id) { where.push('o.batch_id = ?'); params.push(filters.batch_id); }
   const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const total = db.prepare(`SELECT count(*) AS n FROM alerts a
     JOIN observations o ON o.id = a.observation_id${clause}`).get(...params).n;
@@ -142,11 +146,43 @@ export function resolveAlert(db, id) {
 
 export function updateExplanation(db, id, result) {
   db.prepare(`UPDATE alerts SET ai_summary = ?, suggested_checks_json = ?,
-    explanation_status = ?, provider = ?, model = ?, updated_at = ? WHERE id = ?`)
+    explanation_status = ?, provider = ?, model = ?, explanation_claimed_at = NULL,
+    updated_at = ? WHERE id = ? AND explanation_status = 'pending'`)
     .run(
       result.summary ?? null,
       result.suggestedChecks ? JSON.stringify(result.suggestedChecks) : null,
       result.status, result.provider ?? null, result.model ?? null,
       new Date().toISOString(), id
     );
+}
+
+export function recoverPendingExplanations(db, enabled) {
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    db.prepare(`UPDATE alerts SET explanation_status = 'fallback', explanation_claimed_at = NULL,
+      updated_at = ? WHERE explanation_status = 'pending' AND (? = 0 OR explanation_attempts >= 2)`)
+      .run(now, Number(enabled));
+    if (enabled) db.prepare(`UPDATE alerts SET explanation_claimed_at = NULL
+      WHERE explanation_status = 'pending' AND explanation_attempts < 2`).run();
+  })();
+}
+
+export function claimPendingExplanation(db) {
+  return db.transaction(() => {
+    const row = db.prepare(`SELECT id FROM alerts
+      WHERE explanation_status = 'pending' AND explanation_claimed_at IS NULL
+        AND explanation_attempts < 2
+      ORDER BY created_at ASC, id ASC LIMIT 1`).get();
+    if (!row) return null;
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE alerts SET explanation_attempts = explanation_attempts + 1,
+      explanation_claimed_at = ?, updated_at = ? WHERE id = ?`).run(now, now, row.id);
+    const alert = getAlert(db, row.id);
+    return {
+      id: alert.id,
+      observation: alert.observation,
+      policy: alert.observation.effective_policy,
+      findings: alert.findings
+    };
+  })();
 }
