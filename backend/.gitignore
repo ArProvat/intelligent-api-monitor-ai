@@ -7,3 +7,6 @@ data/
 *.db-shm
 *.db-wal
 auto_commit.ps1
+AI_Prompts.docx
+ai-prompts.md
+ai-prompt.md

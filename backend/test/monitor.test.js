@@ -353,6 +353,26 @@ test('LLM concurrency stays bounded across requests', async () => {
   assert.equal(peak, 2);
 });
 
+test('a timed-out held provider call releases worker capacity for the next alert', async () => {
+  let calls = 0;
+  const provider = async () => {
+    calls++;
+    if (calls === 1) return new Promise(() => {});
+    return { summary: 'Second alert completed.', suggested_checks: ['Inspect the next request.'] };
+  };
+  const f = await fixture({ llmMode: 'openrouter', openrouterKey: 'test-key', llmConcurrency: 1, llmTimeoutMs: 100 }, provider);
+  try {
+    const sent = await f.request('/monitor', 'POST', [
+      { ...base, api_name: 'HeldProviderAPI', status_code: 500 },
+      { ...base, api_name: 'NextProviderAPI', status_code: 500 }
+    ]);
+    const [held, next] = sent.body.results.map(item => item.alert_id);
+    assert.equal((await waitForAlert(f, held, 'fallback')).ai_summary, null);
+    assert.equal((await waitForAlert(f, next, 'generated')).ai_summary, 'Second alert completed.');
+    assert.equal(calls, 2);
+  } finally { await f.cleanup(); }
+});
+
 test('closed database gives error and health failure', async () => {
   const f = await fixture();
   try {

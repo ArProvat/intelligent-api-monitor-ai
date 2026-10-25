@@ -7,13 +7,16 @@
     "dev": "vite --configLoader native --host 127.0.0.1",
     "build": "vite build --configLoader native",
     "preview": "vite preview --configLoader native --host 127.0.0.1",
-    "test": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism"
+    "test": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism",
+    "test:e2e": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism src/App.e2e.test.jsx",
+    "test:browser": "playwright test --config=playwright.config.js"
   },
   "dependencies": {
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

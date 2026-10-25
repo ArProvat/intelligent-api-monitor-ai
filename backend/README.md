@@ -25,6 +25,7 @@ For development: `node --env-file=.env --watch src/server.js` (or `npm run dev` 
 | `API_POLICIES_JSON` | `{}` | Map of API names to policy overrides |
 | `LLM_MODE` | `fallback` | `openrouter`, `mock`, or `fallback` |
 | `OPENROUTER_API_KEY` | empty | Server side credential; absent key forces fallback even in `openrouter` mode |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible provider endpoint; use a local stub only for automated tests |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | OpenRouter model ID supporting structured outputs |
 | `LLM_TIMEOUT_MS` | `8000` | Per call and queue wait timeout, 100–60000 |
 | `LLM_CONCURRENCY` | `3` | Maximum concurrent provider calls, 1–20 |
