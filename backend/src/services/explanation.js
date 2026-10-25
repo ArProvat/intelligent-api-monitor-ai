@@ -30,9 +30,9 @@ export function validateExplanation(value) {
   return data;
 }
 
-export function createOpenRouterProvider({ key, model, client = new OpenAI({
+export function createOpenRouterProvider({ key, model, baseUrl = 'https://openrouter.ai/api/v1', client = new OpenAI({
   apiKey: key,
-  baseURL: 'https://openrouter.ai/api/v1',
+  baseURL: baseUrl,
   maxRetries: 0
 }) }) {
   return async (input, signal) => {
@@ -88,12 +88,17 @@ export function createLimiter(max) {
 
     const controller = new AbortController();
     let timer;
+    let slotReleased = false;
+    const releaseSlot = () => {
+      if (slotReleased) return;
+      slotReleased = true;
+      release();
+    };
     const actual = Promise.resolve().then(() => task(controller.signal));
-    // A timed-out call keeps its slot until the provider promise settles.
-    actual.finally(release).catch(() => {});
+    actual.finally(releaseSlot).catch(() => {});
     try {
       return await Promise.race([actual, new Promise((_, reject) => {
-        timer = setTimeout(() => { controller.abort(); reject(new Error('LLM timeout')); }, timeoutMs);
+        timer = setTimeout(() => { controller.abort(); releaseSlot(); reject(new Error('LLM timeout')); }, timeoutMs);
       })]);
     } finally { clearTimeout(timer); }
   };
@@ -116,7 +121,7 @@ export function immediateExplanation(mode, observation, findings) {
 export function createExplainer(config, provider = null, logger = null) {
   const mode = explanationMode(config);
   const call = provider ?? (mode === 'openrouter'
-    ? createOpenRouterProvider({ key: config.openrouterKey, model: config.openrouterModel })
+    ? createOpenRouterProvider({ key: config.openrouterKey, model: config.openrouterModel, baseUrl: config.openrouterBaseUrl })
     : null);
   const limit = createLimiter(config.llmConcurrency);
 

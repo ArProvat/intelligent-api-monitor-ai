@@ -27,6 +27,9 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .chrome-smoke/
+frontend/test-artifacts/
+frontend/test-results/
+frontend/playwright-report/
 auto_commit.ps1
 auto_commit_frontend.ps1
 run_chain.ps1

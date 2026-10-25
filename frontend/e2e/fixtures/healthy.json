@@ -1,0 +1,8 @@
+[
+  {
+    "api_name": "FixtureHealthyAPI",
+    "response_time_ms": 120,
+    "status_code": 200,
+    "records_returned": 3
+  }
+]

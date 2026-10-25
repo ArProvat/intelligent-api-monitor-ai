@@ -13,6 +13,7 @@ const environment = z.object({
   API_POLICIES_JSON: z.string().default('{}'),
   LLM_MODE: z.enum(['openrouter', 'mock', 'fallback']).default('fallback'),
   OPENROUTER_API_KEY: z.string().default(''),
+  OPENROUTER_BASE_URL: z.url().default('https://openrouter.ai/api/v1'),
   OPENROUTER_MODEL: z.string().min(1).default('openai/gpt-4o-mini'),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(100).max(60000).default(8000),
   LLM_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(3),
@@ -29,6 +30,7 @@ export function loadConfig(env = process.env) {
     port: parsed.PORT, host: parsed.HOST, databasePath: parsed.DATABASE_PATH,
     corsOrigins: parsed.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean),
     policies, llmMode: parsed.LLM_MODE, openrouterKey: parsed.OPENROUTER_API_KEY,
+    openrouterBaseUrl: parsed.OPENROUTER_BASE_URL,
     openrouterModel: parsed.OPENROUTER_MODEL, llmTimeoutMs: parsed.LLM_TIMEOUT_MS,
     llmConcurrency: parsed.LLM_CONCURRENCY, shutdownGraceMs: parsed.SHUTDOWN_GRACE_MS,
     logLevel: parsed.LOG_LEVEL
