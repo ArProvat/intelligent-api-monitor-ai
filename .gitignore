@@ -30,3 +30,6 @@ Thumbs.db
 auto_commit.ps1
 auto_commit_frontend.ps1
 run_chain.ps1
+run_auto_commits.ps1
+auto_commit_runner.log
+

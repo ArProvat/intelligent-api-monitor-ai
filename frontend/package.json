@@ -7,7 +7,8 @@
     "dev": "vite --configLoader native --host 127.0.0.1",
     "build": "vite build --configLoader native",
     "preview": "vite preview --configLoader native --host 127.0.0.1",
-    "test": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism"
+    "test": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism",
+    "test:e2e": "vitest run --configLoader native --pool=threads --maxWorkers=1 --no-file-parallelism src/App.e2e.test.jsx"
   },
   "dependencies": {
     "react": "^19.3.1",
