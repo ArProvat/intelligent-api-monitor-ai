@@ -20,15 +20,48 @@ The React dashboard submits observations, shows indexed validation feedback, lis
 | Explanation service and worker | Build/validate provider requests, bound calls, persist final explanation states, and recover pending work at startup | [backend/src/services/explanation.js](../backend/src/services/explanation.js), [backend/src/services/explanationWorker.js](../backend/src/services/explanationWorker.js) |
 | External LLM provider | OpenRouter-compatible chat-completions endpoint used through the OpenAI SDK, only in configured real mode | [backend/src/services/explanation.js](../backend/src/services/explanation.js) |
 
+## Architecture diagram
 ```mermaid
-flowchart TB
-    UI[React dashboard] --> API[Express HTTP API]
-    API --> Rules[Validation and deterministic rules]
-    Rules --> DB[(SQLite)]
-    DB --> Worker[In-process explanation worker]
-    Worker --> LLM[OpenRouter via OpenAI SDK]
-    Worker --> DB
+flowchart LR
+    subgraph Frontend[React frontend]
+        Dashboard[Dashboard]
+        Submit[Submit observations]
+        Alerts[Filter inspect and resolve alerts]
+        Dashboard --> Submit
+        Dashboard --> Alerts
+    end
+
+    subgraph Backend[Node.js and Express backend]
+        API[HTTP API routes]
+        Validate[Batch and item validation]
+        Policy[Policy selection]
+        Detect[Deterministic detection]
+        Persist[Batch and alert persistence]
+        Worker[Background explanation worker]
+        API --> Validate --> Policy --> Detect --> Persist
+        API --> Worker
+    end
+
+    Database[(SQLite database)]
+    LLM[OpenRouter LLM provider]
+
+    Submit -->|POST monitor observations| API
+    Alerts <-->|GET alerts and PATCH resolve| API
+    Persist -->|batches observations alerts findings| Database
+    Database -->|pending explanation work| Worker
+    Worker -->|generated or fallback result| Database
+    Worker -->|findings policy and metrics| LLM
 ```
+
+The application has three main parts: a React frontend, a Node.js and Express backend, and a SQLite database. The backend also integrates with an LLM through OpenRouter.
+
+The frontend submits observations and lets users filter alerts, inspect evidence, and resolve them. The backend validates input, applies detection policies, stores observations and alerts, and manages explanations. SQLite preserves batches, observations, findings, alert status, and explanation results across restarts.
+
+An important boundary is that this application evaluates submitted observations. It does not independently poll external APIs.
+
+Detection uses deterministic rules. For example, a response above the configured latency threshold produces a slow-response finding, while HTTP 500 produces a server-failure finding. The LLM receives those findings and supporting metrics. It does not control severity or decide whether an anomaly exists.
+
+After ingestion commits, the API responds immediately. A background worker reads pending explanation work from SQLite and calls the provider within a configured concurrency limit. The dashboard refreshes pending explanations until they reach a final state.
 
 The worker and API share one Node.js process and one SQLite file. The database is also the worker’s durable source of pending rows; it is not an external queue or distributed coordinator.
 
@@ -57,8 +90,7 @@ sequenceDiagram
     participant Worker as In-process worker
     participant LLM as OpenRouter
     Browser->>API: POST /monitor JSON array
-    API->>Rules: Check batch; validate each item
-    Rules->>Rules: Select policy; detect findings; make fallback
+    API->>Rules: Check batch and validate each item
     Rules->>DB: Insert batch, accepted observations, alerts
     DB-->>API: Commit and IDs
     API-->>Browser: 200/422 committed initial result
@@ -69,7 +101,7 @@ sequenceDiagram
         LLM-->>Worker: JSON explanation
         Worker->>DB: Mark generated and save fields
     else timeout, provider error, or invalid output
-        Worker->>DB: Mark fallback; keep factual fallback
+        Worker->>DB: Mark fallback and keep factual fallback
     end
 ```
 
